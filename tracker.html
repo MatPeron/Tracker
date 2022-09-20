@@ -1,0 +1,293 @@
+<!--
+
+	AUTHOR: Matteo Peron
+	
+	DESCRIPTION: This is a simple html+js offline web-app designed to define and track steps for a generic project. The idea is to have a header section dedicated to the title of the project and description, and a body made of nested lists that can be incremented by the user and represent the various sections and subsections of the project, each item with a title and a description. Each item in the nested list can be either flagged as "in progress" or "completed" in order to signal the status of that item. Starting from the second level in the nested list, an item can also be flagged as "issue", to signal that there's a problem with the parent item (e.g. if during development of item 2.1 the user encounters an issue, they can add a new item 2.1.1, flag it as an issue and then add a description of the issue for future reference; once the issue is resolved the item may be flagged as "completed" and a description of the solution added). Another feature is linking between disconnected items: in some cases it's possible that items belonging to different steps in the project can have a close causal relationship, so it's nice to link items to each other in order to quickly see this relationship and help with the resolution of possible issues.
+	Finally some optional features that could be implemented is timestamps and committments to track the progress in time and see the various changes, and a diagram view of the project.
+	
+	In terms of code, this is meant to be a simple app that only relies on pure javascript for its functionalities, so no frameworks like, e.g., jQuery. For saving progress it uses indexedDB to save a database of the user's inputs automatically. It also has export features that allow the user to backup progress directly by downloading the database in JSON format. Ideally some inline math system should be added, together with images (although these can also be linked to local or online files by using hypertextual links).
+	
+	TODO:
+		- Function to load item from database. May be worth to exploit level and section attributes to construct back the tree using appendChildItem.
+		- rewrite js code with event listeners to not clutter the HTML with event attributes (see eg https://www.youtube.com/watch?v=jfYWwQrtzzY e implement this code). Also add a class to define items, and keep track of all the items in a global array (or global object).
+
+-->
+
+<!DOCTYPE html>
+<html>
+<head>
+	<meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <style>
+    body {
+		margin: 0;
+	}
+	
+	.level-container {
+		background-color: #333;
+		padding: 1rem;
+		margin-top: 1rem;
+	}
+	
+	.item-container {
+		padding: 1rem;
+		background-color: white;
+		border: 1px solid black;
+		cursor: grab;
+	}
+	
+	.root {
+		cursor: auto;
+	}
+	
+	h2,p {
+		cursor: text;
+	}
+    </style>
+	
+	<!--
+		This block contains the code that defines the Item class. The item class should contain properties that define:
+			- title
+			- description
+			- level
+			- section
+			- type (in-progress/completed, issue/solved)
+			- the levels and sections of its children
+			- the levels and sections of the items causally related to it
+			
+		The item class should contain methods that:
+			- build the html that displays the object to the user from the properties
+			- move the Item to a new level/section
+			- delete the item
+			- add a new child Item
+			- export the properties to some format (e.g. JSON)
+			- import the properties from some object
+			
+		Every time the delete, add or move methods are called, all other items should respond and adapt accordingly (for example, if an Item is deleted, all its children have to be deleted as well). In order for this to be doable it's probably best if there's another class, Tree, that stores all instances of Item and has the move, add and delete methods (plus other methods to export/import the whole tree maybe)
+	-->
+	<script type="module">
+	class Tree {
+		constructor(root) {
+			this.items = [[root, []]];
+		}
+		
+		find(section, items=this.items) {
+			if(section[0]===0) {
+				return this.items[0]
+			}
+			
+			let match = null;
+			for(let item of items) {
+				let parent = item[0];
+				let children = item[1];
+				
+				if(parent.section.length===section.length && parent.section.every((el, idx) => el===section[idx])) {
+					match = item;
+					break
+				} else if(children.length!==0) {
+					match = this.find(section, children);
+				}
+			}
+			
+			return match
+		}
+		
+		addListeners() {
+			document.body.addEventListener("dragover", event => {
+				if(event.target.classList.contains("level-container")) {
+					event.preventDefault();
+					console.log("over valid target,", event.target);
+				}
+			});
+			
+			document.body.querySelectorAll(".item-container").forEach(item => {
+				if(!item.classList.contains("root")) {
+					item.addEventListener("dragstart", event => {
+					    console.log("drag event initiated from", item);
+						event.stopPropagation();
+						//item.classList.add("dragging");
+					});
+					
+					item.addEventListener("drop", event => {
+						event.preventDefault();
+						console.log(item, "dropped on", event.target);
+					});
+					
+					item.querySelector(".del-button").addEventListener("click", () => {
+						let targetSection = item.getAttribute("section").split(".").map(el => +el);
+						let targetIdx = targetSection.pop();
+						this.delItem(this.find(targetSection)[1], targetIdx-1);
+						this.update();
+					});
+				}
+				
+				item.querySelector(".add-button").addEventListener("click", () => {
+					let targetSection = !item.classList.contains("root")? item.getAttribute("section").split(".").map(el => +el):[0];
+					this.addItem(this.find(targetSection)[1]);
+					this.update();
+				});
+				
+				let title = item.querySelector(".item-title")
+				title.addEventListener("input", () => {
+					let targetSection = !item.classList.contains("root")? item.getAttribute("section").split(".").map(el => +el):[0];
+					this.find(targetSection)[0].title = title.innerHTML
+				});
+				
+				let description = item.querySelector(".item-description")
+				description.addEventListener("input", () => {
+					let targetSection = !item.classList.contains("root")? item.getAttribute("section").split(".").map(el => +el):[0];
+					this.find(targetSection)[0].description = description.innerHTML
+				});
+			});
+		}
+		
+		update(items=this.items, container=document.body, actOnLevel=-1, actOnSection=[]) {
+            // resets HTML
+			container.innerHTML = null
+            
+            items.forEach((item, idx) => {
+                actOnSection[actOnLevel] += 1;
+                
+                let parent = item[0];
+                let children = item[1];
+                
+				// update level and section
+                parent.level = actOnLevel;
+                parent.section = [...actOnSection];
+                
+				// build HTML
+                let itemHTML = parent.HTML()
+				
+                this.update(children,
+                    itemHTML.querySelector(".level-container"),
+                    actOnLevel+1,
+                    actOnSection.concat(0));
+                container.append(itemHTML);
+            });
+			
+			// once HTML is built, add event listeners
+			if(actOnLevel===-1) {
+				this.addListeners()
+			}
+        }
+        
+        addItem(to, at=null, newItem=null) {
+            if(newItem===null) {newItem = [new Item(1, [1]), []]}
+			if(at===null) {at = to.length}
+			
+            to.splice(at, 0, newItem);
+        }
+        
+        delItem(from, at) {
+            from.splice(at, 1);
+        }
+		
+		static reduceToClosestItem(items, y) {
+			return items.reduce((previous, current) => {
+				let box = current.getBoundingClientRect();
+				let offset = y-box.top-box.height/2;
+				
+				if(offset<0 && offset>previous.offset) {
+					return {
+						offset: offset,
+						item: current
+					}
+				}
+				return previous
+			}, {offset: Number.NEGATIVE_INFINITY, item: null}).item;
+		}
+	}
+    
+    class Item {
+        constructor(level, section) {
+            this.title = "Titolo";
+            this.description = "Descrizione";
+            this.level = level;
+            this.section = section;
+            this.type = null;
+            this.children = null;
+            this.relatives = null;
+            this.isRoot = level===-1? true:false;
+            this.status = "static";
+        }
+        
+        HTML() {
+            let itemContainer = Item.createNode("div", {
+                class: !this.isRoot? "item-container":"item-container root",
+                level: !this.isRoot? this.level:null,
+                section: !this.isRoot? this.section.join("."):null,
+                draggable: !this.isRoot? true:null
+            }, null);
+			
+			let sectionTag = Item.createNode("span", {
+				class: "section-tag"
+			}, this.section.join("."));
+            
+            let itemTitle = Item.createNode("h2", {
+                class: "item-title",
+                contenteditable: true,
+                placeholder: "Titolo"
+            }, this.title);
+            
+            let delButton = Item.createNode(!this.isRoot? "button":null, {
+                class: "del-button",
+                type: "button"
+            }, "Delete item");
+            
+            let addButton = Item.createNode("button", {
+                class: "add-button",
+                type: "button"
+            }, "Add item");
+            
+            let itemDescription = Item.createNode("p", {
+                class: "item-description",
+                contenteditable: true,
+                placeholder: "Descrizione"
+            }, this.description);
+            
+            let levelContainer = Item.createNode("div", {
+                class: "level-container",
+                level: this.level+1,
+                section: !this.isRoot? this.section.join("."):0,
+            }, null);
+            
+			itemContainer.appendChild(sectionTag);
+            itemContainer.appendChild(itemTitle);
+            itemContainer.appendChild(delButton);
+            itemContainer.appendChild(addButton);
+            itemContainer.appendChild(itemDescription);
+            itemContainer.appendChild(levelContainer);
+            
+            return itemContainer
+        }
+		
+		get copy() {
+			let copy = new Item(this.level, this.section)
+			copy.title = this.title
+			copy.description = this.description
+		
+			return copy
+		}
+        
+        static createNode(tag, attributes, innerHTML) {
+            if(tag===null) return document.createDocumentFragment()
+            
+            let node = document.createElement(tag);
+            Object.keys(attributes).forEach(key => {
+                if(attributes[key]!==null) {
+                    node.setAttribute(key, attributes[key]);
+                }
+            });
+            node.innerHTML = innerHTML;
+            
+            return node
+        }
+    }
+    
+    let tree = new Tree(new Item(-1, []));
+    tree.update();console.log(tree);
+	</script>
+</head>
+
+<body>
+</body>
+</html> 
