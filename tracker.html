@@ -26,17 +26,31 @@
 		background-color: #333;
 		padding: 1rem;
 		margin-top: 1rem;
+		border: solid 2px transparent
+	}
+	
+	.dropzone {
+		border: 2px solid #00A2FF;
 	}
 	
 	.item-container {
 		padding: 1rem;
 		background-color: white;
-		border: 1px solid black;
+		border: 2px solid black;
 		cursor: grab;
 	}
 	
 	.root {
 		cursor: auto;
+	}
+	
+	.collapsed>.item-description,
+    .collapsed>.level-container {
+		display: none
+	}
+	
+	.closest {
+		border-top: 2px solid #00A2FF;
 	}
 	
 	h2,p {
@@ -45,24 +59,13 @@
     </style>
 	
 	<!--
-		This block contains the code that defines the Item class. The item class should contain properties that define:
-			- title
-			- description
-			- level
-			- section
-			- type (in-progress/completed, issue/solved)
-			- the levels and sections of its children
-			- the levels and sections of the items causally related to it
-			
-		The item class should contain methods that:
-			- build the html that displays the object to the user from the properties
-			- move the Item to a new level/section
-			- delete the item
-			- add a new child Item
-			- export the properties to some format (e.g. JSON)
-			- import the properties from some object
-			
-		Every time the delete, add or move methods are called, all other items should respond and adapt accordingly (for example, if an Item is deleted, all its children have to be deleted as well). In order for this to be doable it's probably best if there's another class, Tree, that stores all instances of Item and has the move, add and delete methods (plus other methods to export/import the whole tree maybe)
+		TODO:
+		-styles
+		 2. add a status indicator to the item to show the type
+		-functionality
+		 1. add types (WIP, DONE and ISSUE, WIP should be the default, ISSUE should have a checkbox to flag the the issue as solved): could be done by adding a dropdown that goes right before the title and is masked as part of the title (yet still recognizable by the user as a dropdown when they hover on it with the mouse). Root doesnt have a type.
+		 3. remove extra <br> tag at end of description and title
+		-autosave and export
 	-->
 	<script type="module">
 	class Tree {
@@ -91,25 +94,93 @@
 			return match
 		}
 		
+		deepCopy(item) {
+			let copy = [];
+			let parent = item[0];
+			let children = item[1];
+			
+			copy.push(parent.copy());
+			let childrenCopy = []
+			for(let child of children) {
+				childrenCopy.push(this.deepCopy(child))
+			}
+				
+			copy.push(childrenCopy)
+					
+			return copy
+		}
+		
 		addListeners() {
-			document.body.addEventListener("dragover", event => {
-				if(event.target.classList.contains("level-container")) {
+			document.body.querySelectorAll(".level-container").forEach(container => {
+				container.addEventListener("dragover", event => {
+					let dragged = document.body.querySelector(".dragging");
+					let draggedLevel = +dragged.getAttribute("level")+1;
+					let draggedSection = dragged.getAttribute("section");
+					if(event.target===container && container.getAttribute("section").slice(0, draggedLevel)!==draggedSection) {
+						event.preventDefault();
+						container.classList.add("dropzone");
+						
+						let targetLevel = container.getAttribute("level");
+						let itemsOver = container.querySelectorAll(".item-container[level=\""+targetLevel+"\"]:not(.dragging)");
+						let closest = Tree.reduceToClosestItem(Array.from(itemsOver), event.clientY);
+						container.querySelectorAll(".closest").forEach(item => {
+							item.classList.remove("closest");
+						});
+						closest.classList.add("closest");
+					} else {
+						container.classList.remove("dropzone");
+						container.querySelectorAll(".closest").forEach(item => {
+							item.classList.remove("closest");
+						});
+					}
+				});
+				
+				container.addEventListener("dragleave", () => {
+					container.classList.remove("dropzone");
+					container.querySelectorAll(".closest").forEach(item => {
+						item.classList.remove("closest");
+					});
+				});
+				
+				container.addEventListener("drop", event => {
+					event.stopPropagation();
 					event.preventDefault();
-					console.log("over valid target,", event.target);
-				}
+					
+					// find the section of the container
+					let targetLevel = container.getAttribute("level");
+					let targetSection = container.getAttribute("section").split(".").map(el => +el);
+					
+					// find what is the closest item to the drop inside the container
+					let itemsOver = container.querySelectorAll(".item-container[level=\""+targetLevel+"\"]:not(.dragging)");
+					let closest = Tree.reduceToClosestItem(Array.from(itemsOver), event.clientY);
+					let closestIdx = closest===null? null:+closest.getAttribute("section").split(".").pop()-1;
+					
+					// find the section of the dragged item
+					let dragged = document.body.querySelector(".dragging");
+					let draggedSection = dragged.getAttribute("section").split(".").map(el => +el);
+					
+					// add and delete, then reset
+					this.addItem(this.find(targetSection)[1], closestIdx, this.find(draggedSection));
+					let draggedIdx = draggedSection.pop()-1;
+					if(targetLevel===dragged.getAttribute("level") && draggedIdx>closestIdx && closestIdx!==null) {
+						draggedIdx += 1;
+					}
+					this.delItem(this.find(draggedSection)[1], draggedIdx);
+					this.update()
+				});
 			});
 			
 			document.body.querySelectorAll(".item-container").forEach(item => {
 				if(!item.classList.contains("root")) {
 					item.addEventListener("dragstart", event => {
-					    console.log("drag event initiated from", item);
+					    //console.log("drag event initiated from", item);
 						event.stopPropagation();
-						//item.classList.add("dragging");
+						item.classList.add("dragging");
 					});
 					
-					item.addEventListener("drop", event => {
-						event.preventDefault();
-						console.log(item, "dropped on", event.target);
+					item.addEventListener("dragend", event => {
+						item.classList.remove("dragging");
+						
 					});
 					
 					item.querySelector(".del-button").addEventListener("click", () => {
@@ -117,6 +188,17 @@
 						let targetIdx = targetSection.pop();
 						this.delItem(this.find(targetSection)[1], targetIdx-1);
 						this.update();
+					});
+					
+					let showBtn = item.querySelector(".show-button");
+					showBtn.addEventListener("click", () =>{
+						let targetSection = !item.classList.contains("root")? item.getAttribute("section").split(".").map(el => +el):[0];
+						if(item.classList.contains("collapsed")) {
+							this.find(targetSection)[0].isExpanded = true;
+						} else {
+							this.find(targetSection)[0].isExpanded = false;
+						}
+						this.update()
 					});
 				}
 				
@@ -156,6 +238,7 @@
                 
 				// build HTML
                 let itemHTML = parent.HTML()
+				parent
 				
                 this.update(children,
                     itemHTML.querySelector(".level-container"),
@@ -207,12 +290,13 @@
             this.children = null;
             this.relatives = null;
             this.isRoot = level===-1? true:false;
-            this.status = "static";
+            this.isExpanded = true;
         }
         
         HTML() {
+			let itemClass = this.isExpanded? "item-container":"item-container collapsed";
             let itemContainer = Item.createNode("div", {
-                class: !this.isRoot? "item-container":"item-container root",
+                class: !this.isRoot? itemClass:itemClass+" root",
                 level: !this.isRoot? this.level:null,
                 section: !this.isRoot? this.section.join("."):null,
                 draggable: !this.isRoot? true:null
@@ -237,6 +321,11 @@
                 class: "add-button",
                 type: "button"
             }, "Add item");
+			
+			let showButton = Item.createNode(!this.isRoot? "button":null, {
+				class: "show-button",
+				type: "button"
+			}, this.isExpanded? "Collapse":"Expand");
             
             let itemDescription = Item.createNode("p", {
                 class: "item-description",
@@ -254,13 +343,14 @@
             itemContainer.appendChild(itemTitle);
             itemContainer.appendChild(delButton);
             itemContainer.appendChild(addButton);
+			itemContainer.appendChild(showButton);
             itemContainer.appendChild(itemDescription);
             itemContainer.appendChild(levelContainer);
             
             return itemContainer
         }
 		
-		get copy() {
+		copy() {
 			let copy = new Item(this.level, this.section)
 			copy.title = this.title
 			copy.description = this.description
